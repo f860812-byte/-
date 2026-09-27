@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>門市即時盤點終端</title>
-  <!-- 引入開源條碼掃描函式庫 -->
   <script src="https://unpkg.com/html5-qrcode"></script>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; background: #eceff1; }
@@ -13,14 +12,11 @@
     .form-group { flex: 1; }
     label { font-size: 11px; font-weight: 600; color: #78909c; display: block; margin-bottom: 3px; }
     input { width: 100%; padding: 8px; border: 1px solid #cfd8dc; border-radius: 4px; box-sizing: border-box; font-size: 14px; }
-    
-    /* 商品即時核對卡片 */
     .verify-box { border-left: 5px solid #b0bec5; background: #fafafa; padding: 10px 12px; border-radius: 4px; transition: all 0.2s; }
     .verify-box.found { border-left-color: #2e7d32; background: #e8f5e9; }
     .verify-box.not-found { border-left-color: #c62828; background: #ffebee; }
     .prod-name { font-size: 18px; font-weight: bold; color: #263238; margin: 2px 0; }
     .prod-meta { font-size: 13px; color: #546e7a; }
-
     #reader { width: 100%; border-radius: 6px; overflow: hidden; background: #000; }
     .btn { width: 100%; padding: 12px; background: #1976d2; color: white; border: none; border-radius: 4px; font-size: 15px; font-weight: bold; cursor: pointer; }
     .btn-stop { background: #d32f2f; margin-top: 8px; }
@@ -31,7 +27,6 @@
 </head>
 <body>
 
-  <!-- 人員與儲位設定 -->
   <div class="card">
     <div class="form-row">
       <div class="form-group">
@@ -49,7 +44,6 @@
     </div>
   </div>
 
-  <!-- 即時反查回顯卡片 -->
   <div class="card">
     <div class="verify-box" id="verifyBox">
       <label id="verifyLabel">等待掃描條碼...</label>
@@ -59,13 +53,11 @@
     <div id="status-msg"></div>
   </div>
 
-  <!-- 鏡頭視窗 -->
   <div class="card">
     <div id="reader"></div>
     <button id="btn-toggle" class="btn" onclick="toggleCamera()">啟動鏡頭掃描</button>
   </div>
 
-  <!-- 本地歷史清單 -->
   <div class="card">
     <label>最近已核驗項目</label>
     <ul class="history-list" id="historyList"></ul>
@@ -73,9 +65,9 @@
 
   <script>
     // ============================================================
-    // 【請替換】填入第二步取得的 Google Apps Script 網頁應用程式網址
+    // 【重要】請將下方引號內的網址換成您第二步取得的 Apps Script 網址
     // ============================================================
-    const GAS_API_URL = "https://f860812-byte.github.io/-/";
+    const GAS_API_URL = "https://script.google.com/macros/s/AKfycbynb8OGPpUN9hmTrTkxU4NxzEM5Ug9L_OikuQxeRto3sRJA1szxYYsEo6-k7yPlPRN76g/exec";
 
     let html5QrCode = null;
     let isScanning = false;
@@ -83,7 +75,6 @@
     let lastCode = "";
     let lastTime = 0;
 
-    // 嗶聲提示 (Web Audio API 免外部音檔)
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     function playBeep(type) {
       if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -115,15 +106,39 @@
           btn.classList.remove("btn-stop");
         });
       } else {
+        const config = {
+          fps: 20,
+          qrbox: { width: 300, height: 120 },
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.QR_CODE
+          ],
+          experimentalFeatures: {
+            useBarCodeDetectorIfSupported: true
+          }
+        };
+
         html5QrCode = new Html5Qrcode("reader");
+        
+        const cameraConfig = {
+          facingMode: "environment",
+          width: { min: 640, ideal: 1280, max: 1920 },
+          height: { min: 480, ideal: 720, max: 1080 }
+        };
+
         html5QrCode.start(
-          { facingMode: "environment" },
-          { fps: 15, qrbox: { width: 280, height: 160 }, aspectRatio: 1.333334 },
+          cameraConfig,
+          config,
           onScanSuccess
         ).then(() => {
           isScanning = true;
           btn.innerText = "關閉鏡頭";
           btn.classList.add("btn-stop");
+          showStatus("鏡頭就緒，請將條碼水平對準中央框", "#1976d2");
         }).catch(err => {
           showStatus("無法開啟相機: " + err, "#d32f2f");
         });
@@ -132,13 +147,14 @@
 
     async function onScanSuccess(decodedText) {
       const now = Date.now();
-      // 防手震防重複：同條碼 2 秒內不重複送，不同條碼間隔 0.8 秒
       if (decodedText === lastCode && (now - lastTime) < 2000) return;
-      if (now - lastTime < 800 || isProcessing) return;
+      if (now - lastTime < 1000 || isProcessing) return;
 
       lastTime = now;
       lastCode = decodedText;
       isProcessing = true;
+
+      showStatus(`已偵測到條碼：${decodedText}，查詢中...`, "#f57c00");
 
       const staff = document.getElementById("staffName").value.trim();
       const loc   = document.getElementById("locationId").value.trim();
@@ -149,8 +165,6 @@
     }
 
     async function sendToGoogleSheets(staff, loc, barcode, qty) {
-      showStatus("正在查詢並寫入...", "#1976d2");
-
       try {
         const response = await fetch(GAS_API_URL, {
           method: "POST",
