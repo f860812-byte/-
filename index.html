@@ -97,7 +97,7 @@
       }
     }
 
-    function toggleCamera() {
+   function toggleCamera() {
       const btn = document.getElementById("btn-toggle");
       if (isScanning) {
         html5QrCode.stop().then(() => {
@@ -123,15 +123,10 @@
         };
 
         html5QrCode = new Html5Qrcode("reader");
-        
-        const cameraConfig = {
-          facingMode: "environment",
-          width: { min: 640, ideal: 1280, max: 1920 },
-          height: { min: 480, ideal: 720, max: 1080 }
-        };
 
+        // 修正：第一個參數維持純粹的 { facingMode: "environment" }
         html5QrCode.start(
-          cameraConfig,
+          { facingMode: "environment" },
           config,
           onScanSuccess
         ).then(() => {
@@ -141,6 +136,9 @@
           showStatus("鏡頭就緒，請將條碼水平對準中央框", "#1976d2");
         }).catch(err => {
           showStatus("無法開啟相機: " + err, "#d32f2f");
+        });
+      }
+    }
         });
       }
     }
