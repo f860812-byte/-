@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>門市即時盤點終端</title>
+  <!-- 引入開源條碼掃描函式庫 -->
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; background: #eceff1; }
+    .card { background: white; border-radius: 8px; padding: 14px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+    .form-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    .form-group { flex: 1; }
+    label { font-size: 11px; font-weight: 600; color: #78909c; display: block; margin-bottom: 3px; }
+    input { width: 100%; padding: 8px; border: 1px solid #cfd8dc; border-radius: 4px; box-sizing: border-box; font-size: 14px; }
+    
+    /* 商品即時核對卡片 */
+    .verify-box { border-left: 5px solid #b0bec5; background: #fafafa; padding: 10px 12px; border-radius: 4px; transition: all 0.2s; }
+    .verify-box.found { border-left-color: #2e7d32; background: #e8f5e9; }
+    .verify-box.not-found { border-left-color: #c62828; background: #ffebee; }
+    .prod-name { font-size: 18px; font-weight: bold; color: #263238; margin: 2px 0; }
+    .prod-meta { font-size: 13px; color: #546e7a; }
+
+    #reader { width: 100%; border-radius: 6px; overflow: hidden; background: #000; }
+    .btn { width: 100%; padding: 12px; background: #1976d2; color: white; border: none; border-radius: 4px; font-size: 15px; font-weight: bold; cursor: pointer; }
+    .btn-stop { background: #d32f2f; margin-top: 8px; }
+    #status-msg { margin-top: 6px; font-size: 12px; font-weight: bold; text-align: center; }
+    .history-list { font-size: 12px; max-height: 120px; overflow-y: auto; padding: 0; margin: 0; list-style: none; }
+    .history-item { padding: 6px 0; border-bottom: 1px solid #f1f3f4; display: flex; justify-content: space-between; }
+  </style>
+</head>
+<body>
+
+  <!-- 人員與儲位設定 -->
+  <div class="card">
+    <div class="form-row">
+      <div class="form-group">
+        <label>盤點人員</label>
+        <input type="text" id="staffName" value="店員A">
+      </div>
+      <div class="form-group">
+        <label>儲位代碼</label>
+        <input type="text" id="locationId" value="A-01-01">
+      </div>
+      <div class="form-group" style="flex: 0.6;">
+        <label>數量</label>
+        <input type="number" id="scanQty" value="1">
+      </div>
+    </div>
+  </div>
+
+  <!-- 即時反查回顯卡片 -->
+  <div class="card">
+    <div class="verify-box" id="verifyBox">
+      <label id="verifyLabel">等待掃描條碼...</label>
+      <div class="prod-name" id="prodName">尚未讀取商品</div>
+      <div class="prod-meta" id="prodMeta">規格：- ｜ 條碼：-</div>
+    </div>
+    <div id="status-msg"></div>
+  </div>
+
+  <!-- 鏡頭視窗 -->
+  <div class="card">
+    <div id="reader"></div>
+    <button id="btn-toggle" class="btn" onclick="toggleCamera()">啟動鏡頭掃描</button>
+  </div>
+
+  <!-- 本地歷史清單 -->
+  <div class="card">
+    <label>最近已核驗項目</label>
+    <ul class="history-list" id="historyList"></ul>
+  </div>
+
+  <script>
+    // ============================================================
+    // 【請替換】填入第二步取得的 Google Apps Script 網頁應用程式網址
+    // ============================================================
+    const GAS_API_URL = "https://script.google.com/macros/s/AKfycbynb8OGPpUN9hmTrTkxU4NxzEM5Ug9L_OikuQxeRto3sRJA1szxYYsEo6-k7yPlPRN76g/exec";
+
+    let html5QrCode = null;
+    let isScanning = false;
+    let isProcessing = false;
+    let lastCode = "";
+    let lastTime = 0;
+
+    // 嗶聲提示 (Web Audio API 免外部音檔)
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function playBeep(type) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      if (type === "success") {
+        osc.frequency.setValueAtTime(1000, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+      } else {
+        osc.type = "sawtooth";
+        osc.frequency.setValueAtTime(300, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.2);
+      }
+    }
+
+    function toggleCamera() {
+      const btn = document.getElementById("btn-toggle");
+      if (isScanning) {
+        html5QrCode.stop().then(() => {
+          isScanning = false;
+          btn.innerText = "啟動鏡頭掃描";
+          btn.classList.remove("btn-stop");
+        });
+      } else {
+        html5QrCode = new Html5Qrcode("reader");
+        html5QrCode.start(
+          { facingMode: "environment" },
+          { fps: 15, qrbox: { width: 280, height: 160 }, aspectRatio: 1.333334 },
+          onScanSuccess
+        ).then(() => {
+          isScanning = true;
+          btn.innerText = "關閉鏡頭";
+          btn.classList.add("btn-stop");
+        }).catch(err => {
+          showStatus("無法開啟相機: " + err, "#d32f2f");
+        });
+      }
+    }
+
+    async function onScanSuccess(decodedText) {
+      const now = Date.now();
+      // 防手震防重複：同條碼 2 秒內不重複送，不同條碼間隔 0.8 秒
+      if (decodedText === lastCode && (now - lastTime) < 2000) return;
+      if (now - lastTime < 800 || isProcessing) return;
+
+      lastTime = now;
+      lastCode = decodedText;
+      isProcessing = true;
+
+      const staff = document.getElementById("staffName").value.trim();
+      const loc   = document.getElementById("locationId").value.trim();
+      const qty   = document.getElementById("scanQty").value.trim();
+
+      await sendToGoogleSheets(staff, loc, decodedText, qty);
+      isProcessing = false;
+    }
+
+    async function sendToGoogleSheets(staff, loc, barcode, qty) {
+      showStatus("正在查詢並寫入...", "#1976d2");
+
+      try {
+        const response = await fetch(GAS_API_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ staff, location: loc, barcode, qty })
+        });
+
+        const res = await response.json();
+
+        if (res.status === "success") {
+          renderVerification(res);
+          addHistory(res);
+        } else {
+          showStatus("系統回傳錯誤: " + res.message, "#d32f2f");
+          playBeep("alert");
+        }
+      } catch (err) {
+        showStatus("網路連線錯誤，請確認網址", "#d32f2f");
+        playBeep("alert");
+      }
+    }
+
+    function renderVerification(data) {
+      const box = document.getElementById("verifyBox");
+      const label = document.getElementById("verifyLabel");
+      const name = document.getElementById("prodName");
+      const meta = document.getElementById("prodMeta");
+
+      if (data.found) {
+        box.className = "verify-box found";
+        label.innerText = "✅ 條碼核對正確 (已寫入紀錄)";
+        label.style.color = "#2e7d32";
+        name.innerText = data.name;
+        meta.innerText = `規格：${data.spec} ｜ 條碼：${data.barcode}`;
+        showStatus(`已確認入帳: ${data.name} x${data.qty}`, "#2e7d32");
+        playBeep("success");
+        if (navigator.vibrate) navigator.vibrate(80);
+      } else {
+        box.className = "verify-box not-found";
+        label.innerText = "⚠️ 警示：查無此商品 (未建檔)";
+        label.style.color = "#c62828";
+        name.innerText = "【未建立主檔條碼】";
+        meta.innerText = `掃讀條碼：${data.barcode} (請交由店長核對)`;
+        showStatus("注意：此商品未在主檔清單內！", "#c62828");
+        playBeep("alert");
+        if (navigator.vibrate) navigator.vibrate([150, 80, 150]);
+      }
+    }
+
+    function showStatus(text, color) {
+      const msg = document.getElementById("status-msg");
+      msg.innerText = text;
+      msg.style.color = color;
+    }
+
+    function addHistory(data) {
+      const list = document.getElementById("historyList");
+      const li = document.createElement("li");
+      li.className = "history-item";
+      const badge = data.found ? "" : "<span style='color:red'>[未建檔]</span> ";
+      li.innerHTML = `<span>${badge}<b>${data.name}</b> (${data.barcode})</span><span>x${data.qty}</span>`;
+      list.insertBefore(li, list.firstChild);
+      if (list.children.length > 15) list.removeChild(list.lastChild);
+    }
+  </script>
+</body>
+</html>
